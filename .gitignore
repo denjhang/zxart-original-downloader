@@ -1,4 +1,11 @@
 __pycache__/
 *.pyc
+
+# Output directories land in whatever cwd the script is run from. They are
+# download artefacts, not source -- keep them out of the repo.
+/nq/
+/mast/
+/mast.zip
+author_*/
 zxart_*/
 /tmp/
