@@ -109,9 +109,19 @@ GET https://zxart.ee/tunes/?action=tunesByElement&elementId=<AUTHOR_ID>&start=0&
 
 | 字段 | 内容 | 用途 |
 | --- | --- | --- |
-| `mp3Url` | `music.zxart.ee/music/<id>_<author>_<title>.ogg` | 网站播放器用的转码音频流，**有损，不是原始文件** |
-| `originalFileUrl` | `zxart.ee/file/id:<id>/filename:<原文件名>` | **原作者上传的原始模块文件，就是你要的** |
-| `trackerFileUrl` | 通常是 `null` | 少数作品额外提供的 tracker 工程文件 |
+| `mp3Url` | `music.zxart.ee/music/<id>_<author>_<title>.ogg` | 网站播放器用的转码音频流，**有损，永远不要下这个** |
+| `originalFileUrl` | `zxart.ee/file/id:<id>/filename:<原文件名>` | 原作者上传的文件。**绝大多数情况这就是原始模块**，但少数条目这里放的是 mp3/wav |
+| `trackerFileUrl` | `zxart.ee/file/id:<id>_tracker/filename:<原文件名>` | 单独的 tracker 工程文件，可能为 `null` |
+
+**选文件的原则：优先原始模块格式，只有拿不到时才退回音频。** 判定逻辑是「后缀」而不是「字段名」：
+
+- 如果 `originalFileUrl` 已经是模块格式（`.pt3` / `.pt2` / `.cop` / `.etc` / `.saa` / `.ay` / `.psg` …），直接用它。
+- 如果 `originalFileUrl` 是音频渲染（`.mp3` / `.ogg` / `.wav` / `.flac`），而 `trackerFileUrl` 指向模块格式，那就**下 `trackerFileUrl`**。这类条目的 `.mp3` 只是作者顺手上传的成品试听，真正的工程在 tracker 字段里。
+- 两者都是音频，或 `trackerFileUrl` 为空，才退回 `originalFileUrl` 的音频。
+
+这不是理论问题：Top 50 作者里 Pyramex 一个人就有 23 首是这种情况（`.mp3` + `.cop`/`.etc`/`.saa` 成对出现），另外 Aki 3 首、X-agon 2 首、Pator 2 首（`.wav` + `.psg`/`.btp`）。照 `originalFileUrl` 无脑下会把这些全变成 mp3，正好丢掉唯一能用的源材料。
+
+脚本会在每次跑之前把这类「救回来」的条目打印出来，并在 `index.json` 里用 `downloadedFrom: "tracker" | "original"` 标注来源，同时保留 `originalFileUrl` / `trackerFileUrl` 两个候选 URL，事后可复核。
 
 ### 4. 原始文件直接可下
 
@@ -183,18 +193,28 @@ ssl.SSLEOFError: EOF occurred in violation of protocol (_ssl.c:1144)
 
 ## 参数说明
 
-`zxart_download.py` 的位置参数是**作者 id**。怎么拿到？
+`zxart_download.py` 的位置参数是**作者 id**，可以给多个。怎么拿到？
 
 打开作者页，URL 里的数字就是：`https://zxart.ee/author/37405/music` → `37405`。
 
+不指定 id 时可以用 `--top N` 直接抓评分前 N 的作曲家：
+
+```bash
+python zxart_download.py --top 50 --workers 12
+```
+
+各子目录的 slug 由作者标题生成，彼此独立，所以多个作者串行抓不会互相覆盖。
+
 常用可选参数：
 
-- `-o, --out DIR` — 作者目录名，默认取作者标题的 slug（`Mast` → `./mast`），取不到标题时退回 `author_<id>`
+- `--top N` — 按站点评分取前 N 位作曲家（别名已折叠）
+- `-o, --out DIR` — 作者目录名，默认取作者标题的 slug（`Mast` → `./mast`），取不到标题时退回 `author_<id>`；仅在只给一个作者时可用
 - `--formats pt3 pt2` — 只要这些格式（小写，不带点）
-- `--limit N` — 最多下 N 首
+- `--limit N` — 每个作者最多下 N 首
 - `--workers N` — 并发数，默认 6
 - `--dry-run` — 只打印清单，不下载
 - `--overwrite` — 覆盖已存在的文件（默认跳过，可断点续传）
+- `-v, --verbose` — 逐个打印下载的文件
 
 ## 已抓取的示例数据集
 
@@ -205,6 +225,8 @@ ssl.SSLEOFError: EOF occurred in violation of protocol (_ssl.c:1144)
 - 全部带 `originalFileUrl`，`trackerFileUrl` 全为 null
 - 无空文件、无重复内容、无损坏，111 个 `.pt3` 全部通过 `ProTracker 3.` 魔数校验
 - 222 个文件 MD5 互不相同（两对同名上传已用 `(a)`/`(b)` 后缀区分）
+
+另有 `--top N` 模式，自动取站点评分最高的 N 位作曲家（把别名折叠回本人，因为 `/authorlist/` 会把每个别名当成独立一行、评分完全相同，直接取前 50 实际只有 7 个人）。用它抓 Top 50 的结果：**50 位作者 / 11069 首 / 67.9 MB**，格式分布以 `.pt3` 5204、`.pt2` 2636、`.ay` 1153 为主，最后只剩 3 首确实没有模块源、只能留 mp3。
 
 ## 免责
 
