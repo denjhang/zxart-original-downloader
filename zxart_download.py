@@ -101,6 +101,37 @@ def list_tunes(author_id: str, limit: int = 1000) -> list[dict]:
     return items
 
 
+LOSSLESS = {".pt3", ".pt2", ".pt1", ".psc", ".scl", ".ay", ".cop", ".etc", ".saa",
+            ".stc", ".stp", ".ts", ".asc", ".gtr", ".vt2", ".st3", ".dmm", ".dst",
+            ".mtc", ".psg", ".tfc", ".pt", ".snd", ".ayc", ".ym", ".flac", ".wav"}
+AUDIO = {".mp3", ".ogg", ".oga", ".m4a", ".opus", ".wma"}
+# A .wav on zxart is a rendered export, not tracker source, so it counts as
+# audio when deciding whether a tracker project is the better download.
+RENDERS = AUDIO | {".wav", ".flac"}
+
+
+def ext_of(url: str) -> str:
+    path = urllib.parse.urlparse(url or "").path
+    return "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
+
+
+def pick_source(item: dict) -> tuple[str, str]:
+    """Choose the file to download: the tracker project over a lossy render.
+
+    For most tunes `originalFileUrl` *is* the module. But a handful of entries
+    only ever had an MP3 uploaded as the "original", while the actual tracker
+    project sits next to it in `trackerFileUrl` (Pyramex has 24 such tunes,
+    mostly .cop/.etc/.saa). Downloading the mp3 there throws away the only
+    real source material, so prefer the tracker file whenever the original is
+    a lossy audio render.
+    """
+    original = item.get("originalFileUrl") or ""
+    tracker = item.get("trackerFileUrl") or ""
+    if tracker and ext_of(original) in RENDERS and ext_of(tracker) not in RENDERS:
+        return tracker, "tracker"
+    return original, "original"
+
+
 def local_name(item: dict, names: dict[int, str] | None = None) -> str:
     """Return the on-disk filename: the original upload name, minus the id.
 
@@ -109,7 +140,8 @@ def local_name(item: dict, names: dict[int, str] | None = None) -> str:
     name the author uploaded under. Tune ids belong in the index, not the
     filename, so the id in the URL path is never used here.
     """
-    raw = urllib.parse.urlparse(item.get("originalFileUrl") or "")
+    url, _ = pick_source(item)
+    raw = urllib.parse.urlparse(url)
     name = ""
     if "filename:" in raw.path:
         name = urllib.parse.unquote(raw.path.split("filename:", 1)[1])
@@ -157,6 +189,46 @@ def year_dir(item: dict) -> str:
     return year if re.fullmatch(r"\d{4}", year) else "unknown"
 
 
+def list_authors(limit: int = 50) -> list[dict]:
+    """Top musicians by site rating, aliases folded into their real author.
+
+    /authorlist/ returns both authors and their aliases as separate rows with
+    an identical musicRating, so the raw top 50 is really ~7 people. Rows carry
+    realNameId pointing at the owning author; keying on that collapses them.
+    """
+    fetched = 0
+    page = 500
+    merged: dict[int, dict] = {}
+    while fetched < 3000:
+        params = urllib.parse.urlencode(
+            {
+                "elementId": "0",
+                "start": str(fetched),
+                "limit": str(page),
+                "sorting": "musicRating,desc",
+                "items": "music",
+            }
+        )
+        data = json.loads(fetch(f"https://zxart.ee/authorlist/?{params}"))
+        rows = data.get("items") or []
+        if not rows:
+            break
+        for row in rows:
+            owner = row.get("realNameId") or row["id"]
+            name = row.get("realName") if row.get("realNameId") else row.get("title")
+            entry = merged.setdefault(
+                owner,
+                {"id": owner, "name": name or row.get("title"), "rating": row.get("musicRating"), "aliases": []},
+            )
+            if row.get("entityType") == "authorAlias" and row.get("title"):
+                entry["aliases"].append(row["title"])
+        fetched += len(rows)
+        if fetched >= (data.get("total") or 0):
+            break
+    ranked = sorted(merged.values(), key=lambda a: -(a.get("rating") or 0))
+    return ranked[:limit]
+
+
 def author_slug(author_id: str, override: str | None = None) -> str:
     """Folder name for the author: slugified title, e.g. 37405 -> "mast"."""
     if override:
@@ -181,7 +253,8 @@ def download(item: dict, out_root: Path, name: str, overwrite: bool = False) -> 
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not overwrite and dest.exists() and dest.stat().st_size > 0:
         return "skip", str(dest.relative_to(out_root))
-    payload = fetch(item["originalFileUrl"])
+    url, _kind = pick_source(item)
+    payload = fetch(url)
     if not payload:
         raise RuntimeError("empty response")
     tmp = dest.with_suffix(dest.suffix + ".part")
@@ -194,6 +267,7 @@ def write_index(items: list[dict], out_root: Path, names: dict[int, str]) -> Non
     rows = []
     for i in items:
         name = names.get(i["id"], local_name(i))
+        url, kind = pick_source(i)
         rows.append(
             {
                 "id": i["id"],
@@ -201,7 +275,10 @@ def write_index(items: list[dict], out_root: Path, names: dict[int, str]) -> Non
                 "format": i.get("format"),
                 "year": i.get("year"),
                 "file": f"{year_dir(i)}/{name}",
+                "downloadedFrom": kind,
+                "downloadedUrl": url,
                 "originalFileUrl": i.get("originalFileUrl"),
+                "trackerFileUrl": i.get("trackerFileUrl"),
                 "mp3Url": i.get("mp3Url"),
             }
         )
@@ -224,28 +301,14 @@ def write_index(items: list[dict], out_root: Path, names: dict[int, str]) -> Non
     (out_root / "index.md").write_text("\n".join(lines), encoding="utf-8")
 
 
-def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("author_id", help="numeric author id, e.g. 37405 from /author/37405/music")
-    p.add_argument(
-        "-o",
-        "--out",
-        help="author folder to write into (default: the author's slug, e.g. ./mast)",
-    )
-    p.add_argument("--formats", nargs="+", help="only these formats, e.g. pt3 pt2")
-    p.add_argument("--limit", type=int, default=0, help="max tunes to download")
-    p.add_argument("--workers", type=int, default=6, help="parallel downloads (default 6)")
-    p.add_argument("--dry-run", action="store_true", help="list tunes, download nothing")
-    p.add_argument("--overwrite", action="store_true", help="re-download existing files")
-    args = p.parse_args()
-
-    print(f"listing tunes for author {args.author_id} ...", file=sys.stderr)
-    items = list_tunes(args.author_id)
+def run_author(author_id: str, args) -> int:
+    print(f"\n=== author {author_id}", file=sys.stderr)
+    items = list_tunes(author_id)
     if not items:
         print("no tunes found -- check the author id", file=sys.stderr)
         return 1
 
-    out_root = Path(args.out) if args.out else Path(author_slug(args.author_id))
+    out_root = Path(args.out) if args.out else Path(author_slug(author_id))
     print(f"author folder: {out_root}", file=sys.stderr)
     missing = [i for i in items if not i.get("originalFileUrl")]
     items = [i for i in items if i.get("originalFileUrl")]
@@ -261,6 +324,16 @@ def main() -> int:
         counts[k] = counts.get(k, 0) + 1
     summary = ", ".join(f"{k} {v}" for k, v in sorted(counts.items()))
     print(f"{len(items)} tune(s): {summary}", file=sys.stderr)
+
+    rescued = [i for i in items if pick_source(i)[1] == "tracker"]
+    if rescued:
+        print(
+            f"{len(rescued)} tune(s) stored as audio but have a tracker project -- "
+            f"downloading the tracker file instead: "
+            + ", ".join(f"{i['id']}:{ext_of(pick_source(i)[0])}" for i in rescued[:8])
+            + (" ..." if len(rescued) > 8 else ""),
+            file=sys.stderr,
+        )
     if missing:
         print(f"warning: {len(missing)} tune(s) have no originalFileUrl", file=sys.stderr)
     if args.dry_run:
@@ -290,10 +363,11 @@ def main() -> int:
                 failures.append(name)
             with lock:
                 done[status] += 1
-                print(f"{status:4} {name}")
+                if args.verbose:
+                    print(f"{status:4} {name}")
 
     print(
-        f"\ndone: ok={done['ok']} skip={done['skip']} fail={done['fail']} -> {out_root}",
+        f"done: ok={done['ok']} skip={done['skip']} fail={done['fail']} -> {out_root}",
         file=sys.stderr,
     )
     if failures:
@@ -301,6 +375,54 @@ def main() -> int:
         print(f"failures written to {out_root / 'failed.txt'}", file=sys.stderr)
         return 2
     return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument(
+        "author_id",
+        nargs="*",
+        help="numeric author id(s), e.g. 37405 from /author/37405/music",
+    )
+    p.add_argument(
+        "--top",
+        type=int,
+        help="instead of ids, take the N highest-rated musicians (aliases folded)",
+    )
+    p.add_argument(
+        "-o",
+        "--out",
+        help="author folder to write into (default: the author's slug, e.g. ./mast)",
+    )
+    p.add_argument("--formats", nargs="+", help="only these formats, e.g. pt3 pt2")
+    p.add_argument("--limit", type=int, default=0, help="max tunes to download per author")
+    p.add_argument("--workers", type=int, default=6, help="parallel downloads (default 6)")
+    p.add_argument("--dry-run", action="store_true", help="list tunes, download nothing")
+    p.add_argument("--overwrite", action="store_true", help="re-download existing files")
+    p.add_argument("-v", "--verbose", action="store_true", help="print every file")
+    args = p.parse_args()
+
+    ids: list[str] = list(args.author_id)
+    if args.top:
+        ranked = list_authors(args.top)
+        print(f"top {len(ranked)} musicians by rating:", file=sys.stderr)
+        for i, a in enumerate(ranked, 1):
+            alias = f" (+{', '.join(a['aliases'])})" if a["aliases"] else ""
+            print(f"  {i:>2}. {a['name']}{alias}  [{a['id']}]", file=sys.stderr)
+        ids += [str(a["id"]) for a in ranked]
+    if not ids:
+        p.error("give at least one author id or --top N")
+
+    worst = 0
+    for author_id in ids:
+        if len(ids) > 1 and args.out:
+            p.error("-o only makes sense with a single author")
+        try:
+            worst = max(worst, run_author(author_id, args))
+        except Exception as exc:  # noqa: BLE001
+            print(f"author {author_id} failed: {exc}", file=sys.stderr)
+            worst = max(worst, 1)
+    return worst
 
 
 if __name__ == "__main__":
