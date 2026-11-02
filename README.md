@@ -7,10 +7,10 @@
 ## 快速开始
 
 ```bash
-# 下载作者 37405 (Mast) 的全部原始音乐文件
+# 下载作者 37405 (Mast) 的全部原始音乐文件，落到 ./mast/
 python zxart_download.py 37405
 
-# 指定输出目录
+# 自己指定作者目录名
 python zxart_download.py 37405 -o Mast_music
 
 # 只下某种格式
@@ -20,9 +20,27 @@ python zxart_download.py 37405 --formats pt3 pt2
 python zxart_download.py 37405 --dry-run
 ```
 
-输出结构：`<author_id>/PT3/*.pt3`、`<author_id>/PT2/*.pt2` …，附带 `index.md` / `index.json` 清单。
+输出结构按「作者 / 年份」两级，不按格式分目录，文件名里也不带 tune id：
 
-只依赖 Python 3.8+ 标准库，没有第三方包。文件名取自服务器返回的 `filename:` 段（即原作者上传时的原始文件名），只做 Windows 非法字符替换。若同一作者有两个同名文件，这两个都会加上 id 前缀以免互相覆盖。
+```
+mast/
+├── 1995/  Mast_-_ET-POP_(1995).pt2
+├── 1998/  Mast_-_Amiga#3_(1998).pt3
+├── 1999/  Mast_-_Aerodrome_(1999)_(DiHalt_1999,_2).pt3
+├── unknown/  Mast_-_17_instants_of_spring.pt3
+├── index.json
+└── index.md
+```
+
+- **作者目录**默认取作者页标题的 slug（`Mast` → `mast`），`-o` 可以覆盖。不是 `author_37405` 这种带编号的名字。
+- **年份目录**来自 `year` 字段；zxart 上有约 45% 的曲子 `year` 为 `null`，这些进 `unknown/`。
+- **格式混放在同一层**，靠扩展名区分，`.pt3` / `.pt2` / `.psc` 各归各位但不同目录。
+- **文件名**就是服务器返回的 `filename:` 段，即原作者上传时的原始文件名，只做 Windows 非法字符替换。
+- **tune id 只出现在 `index.md` 和 `index.json` 里**，不参与目录和文件名。
+
+仅依赖 Python 3.8+ 标准库，没有第三方包。
+
+同名文件的处理：Mast 有两人次上传用了同一个文件名（两首不同的 `Mast_-_Insomnia_(1999).pt3`、两首不同的 `Mast_-_Mad_Rave.pt2`）。因为文件名里不放 id，这类重复改用字母后缀区分：`Mast_-_Insomnia_(1999) (a).pt3` / `(b)`，按 id 升序分配，哪个是哪个查 `index.json`。
 
 ## 核心原理
 
@@ -171,7 +189,7 @@ ssl.SSLEOFError: EOF occurred in violation of protocol (_ssl.c:1144)
 
 常用可选参数：
 
-- `-o, --out DIR` — 输出目录，默认 `./zxart_<id>`
+- `-o, --out DIR` — 作者目录名，默认取作者标题的 slug（`Mast` → `./mast`），取不到标题时退回 `author_<id>`
 - `--formats pt3 pt2` — 只要这些格式（小写，不带点）
 - `--limit N` — 最多下 N 首
 - `--workers N` — 并发数，默认 6
@@ -183,8 +201,10 @@ ssl.SSLEOFError: EOF occurred in violation of protocol (_ssl.c:1144)
 本仓库不附带任何音乐文件（版权归原作者所有）。作为验证，用本方法抓取 Mast (id 37405) 得到 **222 首 / 710,804 字节**：
 
 - `PT3` 111 首、`PT2` 105 首、`PSC` 6 首
+- 年份分布：1995–2001 共 122 首，`unknown` 100 首
 - 全部带 `originalFileUrl`，`trackerFileUrl` 全为 null
 - 无空文件、无重复内容、无损坏，111 个 `.pt3` 全部通过 `ProTracker 3.` 魔数校验
+- 222 个文件 MD5 互不相同（两对同名上传已用 `(a)`/`(b)` 后缀区分）
 
 ## 免责
 
