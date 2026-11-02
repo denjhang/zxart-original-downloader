@@ -6,18 +6,22 @@
 
 ## 快速开始
 
+脚本把结果写在**当前工作目录**下的作者子目录里，所以建议单独建一个下载目录再运行，别和代码混在一起：
+
 ```bash
+mkdir -p downloads && cd downloads
+
 # 下载作者 37405 (Mast) 的全部原始音乐文件，落到 ./mast/
-python zxart_download.py 37405
+python ../zxart_download.py 37405
 
 # 自己指定作者目录名
-python zxart_download.py 37405 -o Mast_music
+python ../zxart_download.py 37405 -o Mast_music
 
 # 只下某种格式
-python zxart_download.py 37405 --formats pt3 pt2
+python ../zxart_download.py 37405 --formats pt3 pt2
 
 # 只要清单不要文件（先看看有什么）
-python zxart_download.py 37405 --dry-run
+python ../zxart_download.py 37405 --dry-run
 ```
 
 输出结构按「作者 / 年份」两级，不按格式分目录，文件名里也不带 tune id：
@@ -200,7 +204,7 @@ ssl.SSLEOFError: EOF occurred in violation of protocol (_ssl.c:1144)
 不指定 id 时可以用 `--top N` 直接抓评分前 N 的作曲家：
 
 ```bash
-python zxart_download.py --top 50 --workers 12
+python ../zxart_download.py --top 50 --workers 12
 ```
 
 各子目录的 slug 由作者标题生成，彼此独立，所以多个作者串行抓不会互相覆盖。
